@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <fcntl.h>
-#include <iterator>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,18 +13,14 @@
 
 #include <math.h>
 
+#include "axi_dma_controller.h"
 #include "reserved_mem.hpp"
-// #include <axi_dma_controller.h>
-#include "axidma.h"
-#include <xexample.h>
 
 #define DEVICE_FILENAME "/dev/reservedmemLKM"
-#define LENGTH 100
-#define LENGTH_bits 100 * 32
-
+#define LENGTH 8192
 // #define LENGTH 0x007fffff // Length in bytes
-#define P_START 0x70000000
-#define P_OFFSET 0x00001000
+#define P_START  0x70000000
+#define P_OFFSET 0
 
 //#define i_P_START 0
 //#define i_LENGTH 1
@@ -72,52 +67,22 @@ int main() {
          "specified memory.\n\n");
 
   Reserved_Mem pmem;
-  // AXIDMAController dma(UIO_DMA_N, 0x1000);
-  axiDma dma(UIO_DMA_N, 0x1000);
+  AXIDMAController dma(UIO_DMA_N, 0x10000);
 
-
-  dma.IntrDisable(IRQ_ALL,DMA_DIR_DEVICE_TO_DMA);
-  dma.IntrDisable(IRQ_ALL,DMA_DIR_DMA_TO_DEVICE);
-  // XExample example;
-
-  // int rc;
-  // if ((rc = XExample_Initialize(&example, "example")) != XST_SUCCESS) {
-  //   fprintf(stderr, "Initialization failed. Return code: %d\n", rc);
-  //   exit(EXIT_FAILURE);
-  // }
-
-  // XExample_Release(&example);
-
-  // if ((rc = XExample_Initialize(&example, "example")) != XST_SUCCESS) {
-  //   fprintf(stderr, "Initialization failed. Return code: %d\n", rc);
-  //   exit(EXIT_FAILURE);
-  // }
-
-  printf("Initialization successful.\n");
-  // XExample_InterruptGlobalDisable(&example);
-  // XExample_InterruptDisable(&example,1);
-
-  //   XExample_DisableAutoRestart(&example);
-
-  // u32 is_idle = XExample_IsReady(&example);
-
-  // printf("watings for ip to be ready \n");
-  // while(!XExample_IsReady(&example));
-  // printf("is_ready =\n");
-
-  int32_t *tx_buff = (int32_t *)malloc(LENGTH_bits);
+  uint32_t *tx_buff = (uint32_t *)malloc(LENGTH);
   if (tx_buff == NULL) {
     printf("could not allocate user buffer\n");
     return -1;
   }
 
-  int32_t *rx_buff = (int32_t *)malloc(LENGTH_bits);
-  if (rx_buff == NULL) {
+  uint32_t *rx_buff = (uint32_t *)malloc(LENGTH);
+  if (tx_buff == NULL) {
     printf("could not allocate user buffer\n");
     return -1;
   }
 
-  for (int i = 0; i < LENGTH; i++)
+
+  for (int i = 0; i < LENGTH / sizeof(uint32_t); i++)
     tx_buff[i] = i;
 
   printf("User memory reserved and filled\n");
@@ -125,84 +90,152 @@ int main() {
   tmp = 0;
   start_timer();
   // ret = write(reserved_mem_fd, write_info_LKM, sizeof(write_info_LKM));
-  pmem.transfer(tx_buff, 0, LENGTH_bits);
+  pmem.transfer(tx_buff, P_OFFSET, LENGTH);
   total_t += stop_timer();
   std::cout << "Data transfered to reserved memory: " << total_t << "ms ["
-            << (float)LENGTH_bits / 1000000. << "MB]" << std::endl;
+            << (float)LENGTH / 1000000. << "MB]" << std::endl;
 
   start_timer();
+  // printf("Reset the DMA.\n");
+  dma.MM2SReset();
+  dma.S2MMReset();
 
-  printf("staring tranfur from %x to %x \r\n",P_START,P_START+P_OFFSET);
+  while (!dma.ResetIsDone());
 
-  int status = dma.SimpleTransfer((UINTPTR)(P_START + P_OFFSET), 3200,
-                                  DMA_DIR_DEVICE_TO_DMA);
-  if (status != 0) {
-    printf("filed to open resive %i", status);
-    return 1;
-  }
+  // printf("Check MM2S status.\n");
+  DMAStatus mm2s_status = dma.MM2SGetStatus();
+  printf("MM2S status: %s\n", mm2s_status.to_string().c_str());
+  // printf("Check S2MM status.\n");
+  // DMAStatus s2mm_status = dma.S2MMGetStatus();
+  // printf("S2MM status: %s\n", s2mm_status.to_string().c_str());
+  // printf("\n");
 
-  if (dma.SimpleTransfer((UINTPTR)(P_START), 3200, DMA_DIR_DMA_TO_DEVICE) !=
-      0) {
-    printf("filed to open sending");
-    return 1;
-  }
+  // printf("Halt the DMA.\n");
+  dma.MM2SHalt();
+  dma.S2MMHalt();
 
-  printf("sending and reading data\r\n");
+  // printf("Check MM2S status.\n");
+  // mm2s_status = dma.MM2SGetStatus();
+  // printf("MM2S status: %s\n", mm2s_status.to_string().c_str());
+  // printf("Check S2MM status.\n");
+  // s2mm_status = dma.S2MMGetStatus();
+  // printf("S2MM status: %s\n", s2mm_status.to_string().c_str());
+  // printf("\n");
 
-  while (
-      ((dma.Busy(DMA_DIR_DEVICE_TO_DMA)) | (dma.Busy(DMA_DIR_DMA_TO_DEVICE)))) {
-    printf("wating \r\n");
-  }
+  // printf("Enable all interrupts.\n");
+  dma.MM2SInterruptEnable();
+  dma.S2MMInterruptEnable();
+
+  // printf("Check MM2S status.\n");
+  // mm2s_status = dma.MM2SGetStatus();
+  // printf("MM2S status: %s\n", mm2s_status.to_string().c_str());
+  // printf("Check S2MM status.\n");
+  // s2mm_status = dma.S2MMGetStatus();
+  // printf("S2MM status: %s\n", s2mm_status.to_string().c_str());
+  // printf("\n");
+
+  // printf("Writing source address of the data from MM2S in DDR...\n");
+  dma.MM2SSetSourceAddress(P_START + P_OFFSET);
+  // printf("Check MM2S status.\n");
+  // mm2s_status = dma.MM2SGetStatus();
+  // printf("MM2S status: %s\n", mm2s_status.to_string().c_str());
+
+  // printf("Writing the destination address for the data from S2MM in
+  // DDR...\n");
+  dma.S2MMSetDestinationAddress(P_START + LENGTH + P_OFFSET);
+  // printf("Check S2MM status.\n");
+  // s2mm_status = dma.S2MMGetStatus();
+  // printf("S2MM status: %s\n", s2mm_status.to_string().c_str());
+  // printf("\n");
+
+  dma.MM2SStart();
+  // printf("Run the MM2S channel.\n");
+  // printf("Check MM2S status.\n");
+  // mm2s_status = dma.MM2SGetStatus();
+  // printf("MM2S status: %s\n", mm2s_status.to_string().c_str());
+
+  // printf("Run the S2MM channel.\n");
+  dma.S2MMStart();
+  // printf("Check S2MM status.\n");
+  // s2mm_status = dma.S2MMGetStatus();
+  // printf("S2MM status: %s\n", s2mm_status.to_string().c_str());
+  // printf("\n");
+  dma.S2MMSetLength(LENGTH);
+
+  // printf("\nWriting MM2S transfer length of %i bytes...\n", LENGTH);
+  dma.MM2SSetLength(LENGTH); //! WIll only work up to 2^23
+  printf("Check MM2S status.\n");
+  mm2s_status = dma.MM2SGetStatus();
+  printf("MM2S status: %s\n", mm2s_status.to_string().c_str());
+  // printf("Writing S2MM transfer length of 32 bytes...\n");
+  // printf("Check S2MM status.\n");
+  // s2mm_status = dma.S2MMGetStatus();
+  // printf("S2MM status: %s\n", s2mm_status.to_string().c_str());
+  // printf("\n");
 
   tmp = stop_timer();
   total_t += tmp;
   std::cout << "\nDMA setup done, transfer begun: " << tmp << "ms ["
-            << (float)LENGTH_bits / 1000000. << "MB]\n"
+            << (float)LENGTH / 1000000. << "MB]\n"
             << std::endl;
 
   start_timer();
-  // std::cout << "running example" << std::endl;
+  printf("...Waiting for MM2S synchronization...\n");
   // bool first = true;
-  // XExample_Start(&example);
-
-  //  while (!XExample_IsIdle(&example));
-  std::cout << "...Waiting for MM2S synchronization...\n" << std::endl;
-
-  // while (!dma.MM2SIsSynced()) {
-  //   // if (first)
-  //   // {
-  //   // 	printf("Not synced yet...\n");
-  //   // 	first = false;
-  //   // }
-  // }
-
-  std::cout << "...Waiting for S2MM synchronization...\n" << std::endl;
-
-  // while (!dma.S2MMIsSynced());
-
-  // XExample_Start(&example);
-
-  // std::cout << "interrupt " <<XExample_InterruptGetStatus(&example) <<
-  // std::endl; std::cout << "ideal " << XExample_IsIdle(&example) << std::endl;
-  // std::cout << "done " << XExample_IsDone(&example) <<  std::endl;
-  // std::cout << "ready " << XExample_IsReady(&example) <<  std::endl;
-
-  // while(!XExample_IsDone(&example));
+  while (!dma.MM2SIsSynced()) {
+    // if (first)
+    // {
+    // 	printf("Not synced yet...\n");
+    // 	first = false;
+    // }
+  }
 
   tmp = stop_timer();
   total_t += tmp;
   std::cout << "\nData transfered to transfered by DMA: " << tmp << "ms ["
-            << (float)LENGTH_bits / 1000000. << "MB]\n"
+            << (float)LENGTH / 1000000. << "MB]\n"
             << std::endl;
 
+  pmem.gather(tx_buff, P_OFFSET, LENGTH);
+  pmem.gather(rx_buff, P_OFFSET+ (LENGTH/sizeof(uint32_t)), LENGTH);
+
+  std::cout << "Rx/Tx" << std::endl;
+
+  for(int i = 0; i < 32;i++){
+	std::cout << rx_buff[i] << "/" << tx_buff[i] << std::endl;
+  }
+
+  // printf("Check MM2S status.\n");
+  // mm2s_status = dma.MM2SGetStatus();
+  // printf("MM2S status: %s\n", mm2s_status.to_string().c_str());
+  // printf("Waiting for S2MM sychronization...\n");
+  // while(!dma.S2MMIsSynced()) {
+  // 	printf("Not synced yet...\n");
+  // }
+
+  // printf("Check S2MM status.\n");
+  //  s2mm_status = dma.S2MMGetStatus();
+  // printf("S2MM status: %s\n", s2mm_status.to_string().c_str());
+
+  // write_info_LKM[i_P_START] = 0; //! CHECK update read
+  // write_info_LKM[i_LENGTH] = 100;
+  // write_info_LKM[i_K_START] = 10;
+  // ret = read(reserved_mem_fd, write_info_LKM, sizeof(write_info_LKM));
+  // if (ret < 0)
+  // {
+  //     printf("read error!\n");
+  //     ret = errno;
+  //     goto out;
+  // }
+
+  // printf("Data in buffer after read\n");
+  // for (int i = 0; i < 20; i++)
+  // {
+  //     printf("%i ", p[i]);
+  // }
   printf("ALL DONE!\n");
 
   std::cout << "Total duration of transfer: " << total_t << "ms ["
-            << (float)LENGTH_bits / 1000000. << "MB]" << std::endl;
-
-  pmem.gather(rx_buff, P_OFFSET, LENGTH);
-
-  for (int i = 0; i < LENGTH / sizeof(int32_t); i++)
-    std::cout << tx_buff[i] << "/" << rx_buff[i] << std::endl;
+            << (float)LENGTH / 1000000. << "MB]" << std::endl;
   return ret;
 }
